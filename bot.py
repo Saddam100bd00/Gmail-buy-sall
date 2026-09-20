@@ -61,7 +61,7 @@ def get_payments(): return db.collection('settings').document('payments').get().
 def get_texts(): return db.collection('settings').document('texts').get().to_dict()
 
 # ==========================================
-# 3. Multi-Language Strings
+# 3. Multi-Language Strings (FIXED)
 # ==========================================
 LANG = {
     'en': {
@@ -89,7 +89,11 @@ LANG = {
         'min_dep': "⚠️ Minimum deposit is {} BDT.\n\n✏️ *Enter deposit amount:*",
         'send_money': "💳 Method: {}\n📞 Number/Address: `{}`\n\nPlease send {} BDT to this number.\nAfter sending, enter your *TrxID* below:",
         'banned': "🚫 You are banned from using this bot.",
-        'canceled': "Action canceled."
+        'canceled': "Action canceled.",
+        'wallet_msg': "Select an option from your wallet:",
+        'stock_info': "📊 *Live Stock Info*\n\nAvailable Gmails: `{}`",
+        'history_empty': "📜 You haven't bought any Gmails yet.",
+        'refer_txt': "🎁 *Refer & Earn*\n\nShare your link with friends. When they join and use the bot, you get {} BDT bonus!\n\n🔗 Your Link: `https://t.me/{}?start={}`"
     },
     'bn': {
         'buy': "🛒 জিমেইল কিনুন", 'sell': "🤝 জিমেইল বিক্রি করুন",
@@ -116,7 +120,11 @@ LANG = {
         'min_dep': "⚠️ সর্বনিম্ন ডিপোজিট {} টাকা।\n\n✏️ *আপনি কত টাকা ডিপোজিট করবেন তা লিখুন:*",
         'send_money': "💳 মাধ্যম: {}\n📞 নাম্বার/অ্যাড্রেস: `{}`\n\nদয়া করে এই নাম্বারে {} টাকা পাঠান।\nটাকা পাঠানোর পর আপনার *TrxID* নিচে দিন:",
         'banned': "🚫 আপনাকে ব্যান করা হয়েছে।",
-        'canceled': "বাতিল করা হয়েছে।"
+        'canceled': "বাতিল করা হয়েছে।",
+        'wallet_msg': "আপনার ওয়ালেট থেকে একটি অপশন নির্বাচন করুন:",
+        'stock_info': "📊 *লাইভ স্টক ইনফো*\n\nবর্তমানে স্টকে থাকা জিমেইল: `{}` টি",
+        'history_empty': "📜 আপনি এখনো কোনো জিমেইল কিনেননি।",
+        'refer_txt': "🎁 *রেফার করে আয় করুন*\n\nআপনার বন্ধুদের সাথে লিংক শেয়ার করুন। তারা জয়েন করলে আপনি {} টাকা বোনাস পাবেন!\n\n🔗 আপনার লিংক: `https://t.me/{}?start={}`"
     }
 }
 
@@ -206,6 +214,33 @@ def help_handler(message):
     texts = get_texts()
     txt = texts['help_bn'] if u['lang'] == 'bn' else texts['help_en']
     bot.send_message(message.chat.id, txt, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda msg: msg.text in [LANG['en']['stock'], LANG['bn']['stock']])
+def stock_handler(message):
+    u = get_user(message.from_user.id)
+    stock_count = len(list(db.collection('stock_gmails').where('status', '==', 'unsold').stream()))
+    bot.send_message(message.chat.id, LANG[u['lang']]['stock_info'].format(stock_count), parse_mode="Markdown")
+
+@bot.message_handler(func=lambda msg: msg.text in [LANG['en']['history'], LANG['bn']['history']])
+def history_handler(message):
+    u = get_user(message.from_user.id)
+    purchases = db.collection('stock_gmails').where('bought_by', '==', u['id']).stream()
+    history_text = "📜 *Your Purchase History*\n\n"
+    count = 0
+    for doc in purchases:
+        d = doc.to_dict()
+        history_text += f"📧 `{d['email']}`\n🔑 `{d['password']}`\n\n"
+        count += 1
+    if count == 0: bot.send_message(message.chat.id, LANG[u['lang']]['history_empty'])
+    else: bot.send_message(message.chat.id, history_text, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda msg: msg.text in [LANG['en']['refer'], LANG['bn']['refer']])
+def refer_handler(message):
+    u = get_user(message.from_user.id)
+    bot_info = bot.get_me()
+    cfg = get_config()
+    text = LANG[u['lang']]['refer_txt'].format(cfg['ref_bonus'], bot_info.username, message.from_user.id)
+    bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda msg: msg.text in [LANG['en']['lang'], LANG['bn']['lang']])
 def settings_handler(message):
@@ -437,10 +472,9 @@ def process_sell_pass(message, email, mail_type, u):
     bot.send_message(message.chat.id, LANG[u['lang']]['pending'], reply_markup=main_menu(message.from_user.id, u['lang']))
 
 # ==========================================
-# 9. Super Admin Panel
+# 9. Interactive Super Admin Panel
 # ==========================================
-@bot.message_handler(func=lambda msg: msg.text in [LANG['en']['admin_btn'], LANG['bn']['admin_btn']] and msg.from_user.id == ADMIN_ID)
-def admin_panel(message):
+def get_admin_main_menu():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("⚙️ Price Setup", callback_data="adm_menu_price"),
@@ -453,7 +487,11 @@ def admin_panel(message):
         InlineKeyboardButton("📧 Mails List", callback_data="adm_menu_mails"),
         InlineKeyboardButton("➕ Add Stock", callback_data="adm_menu_addstock")
     )
-    bot.send_message(ADMIN_ID, "👑 *Super Admin Panel*\nSelect an option to manage your bot:", parse_mode="Markdown", reply_markup=markup)
+    return markup
+
+@bot.message_handler(func=lambda msg: msg.text in [LANG['en']['admin_btn'], LANG['bn']['admin_btn']] and msg.from_user.id == ADMIN_ID)
+def admin_panel(message):
+    bot.send_message(ADMIN_ID, "👑 *Super Admin Panel*\nSelect an option to manage your bot:", parse_mode="Markdown", reply_markup=get_admin_main_menu())
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm_menu_"))
 def admin_menu_handler(call):
@@ -462,67 +500,118 @@ def admin_menu_handler(call):
     action = call.data.split("_")[2]
     
     if action == "price":
-        c = get_config()
-        txt = f"*Prices:*\nBuy: {c['buy_price']}\nSell New: {c['sell_new']}\nSell Old: {c['sell_old']}\n\nUse: `/set buy_price 20` or `/set sell_new 12`"
-        bot.send_message(ADMIN_ID, txt, parse_mode="Markdown")
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            InlineKeyboardButton("🛒 Buy Price", callback_data="adm_edit_config_buy_price"),
+            InlineKeyboardButton("🆕 Sell New Price", callback_data="adm_edit_config_sell_new"),
+            InlineKeyboardButton("🔄 Sell Old Price", callback_data="adm_edit_config_sell_old"),
+            InlineKeyboardButton("🔙 Back to Menu", callback_data="adm_menu_back")
+        )
+        bot.edit_message_text("⚙️ *Price Setup*\nSelect which price to update:", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
         
     elif action == "wallet":
-        p = get_payments()
-        txt = f"*Wallets:*\nbKash: `{p['bkash']}`\nNagad: `{p['nagad']}`\nRocket: `{p['rocket']}`\nUpay: `{p['upay']}`\nBinance: `{p['binance']}`\n\nUse: `/setwallet bkash 017XXXXXX`"
-        bot.send_message(ADMIN_ID, txt, parse_mode="Markdown")
-        
-    elif action == "dep":
-        c = get_config()
-        bot.send_message(ADMIN_ID, f"Min Deposit: {c['min_dep']}\nUse: `/set min_dep 100`")
-        
-    elif action == "ref":
-        c = get_config()
-        bot.send_message(ADMIN_ID, f"Refer Bonus: {c['ref_bonus']}\nUse: `/set ref_bonus 10`")
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("bKash", callback_data="adm_edit_payments_bkash"),
+            InlineKeyboardButton("Nagad", callback_data="adm_edit_payments_nagad"),
+            InlineKeyboardButton("Rocket", callback_data="adm_edit_payments_rocket"),
+            InlineKeyboardButton("Upay", callback_data="adm_edit_payments_upay"),
+            InlineKeyboardButton("Binance", callback_data="adm_edit_payments_binance"),
+            InlineKeyboardButton("🔙 Back to Menu", callback_data="adm_menu_back")
+        )
+        bot.edit_message_text("💳 *Wallet Management*\nSelect method to update number/address:", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
         
     elif action == "texts":
-        bot.send_message(ADMIN_ID, "📝 *Customize Texts:*\nTo change welcome or help message, please edit them directly in Firebase Database under `settings/texts` document for now.")
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            InlineKeyboardButton("Welcome Message (EN)", callback_data="adm_edit_texts_welcome_en"),
+            InlineKeyboardButton("Welcome Message (BN)", callback_data="adm_edit_texts_welcome_bn"),
+            InlineKeyboardButton("Help Message (EN)", callback_data="adm_edit_texts_help_en"),
+            InlineKeyboardButton("Help Message (BN)", callback_data="adm_edit_texts_help_bn"),
+            InlineKeyboardButton("Banner Image (URL)", callback_data="adm_edit_texts_banner_id"),
+            InlineKeyboardButton("🔙 Back to Menu", callback_data="adm_menu_back")
+        )
+        bot.edit_message_text("📝 *Customize Texts*\nSelect what you want to edit:", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        
+    elif action == "dep":
+        msg = bot.send_message(ADMIN_ID, "✏️ *Enter new Minimum Deposit amount:*\n(Type /cancel to abort)", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_admin_input, 'min_dep', 'config')
+        
+    elif action == "ref":
+        msg = bot.send_message(ADMIN_ID, "✏️ *Enter new Refer Bonus amount:*\n(Type /cancel to abort)", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_admin_input, 'ref_bonus', 'config')
         
     elif action == "broad":
-        bot.send_message(ADMIN_ID, "For All: `/broadcast Hello Users`")
+        msg = bot.send_message(ADMIN_ID, "📢 *Enter message to broadcast to all users:*\n(Type /cancel to abort)", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_admin_input, 'none', 'broadcast')
+        
+    elif action == "addstock":
+        msg = bot.send_message(ADMIN_ID, "➕ *Add Stock*\nSend emails and passwords in this format:\n`email1@gmail.com:pass1`\n`email2@gmail.com:pass2`\n(Type /cancel to abort)", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_admin_input, 'none', 'addstock')
         
     elif action == "status":
         users = len(list(db.collection('users').stream()))
         stock = len(list(db.collection('stock_gmails').where('status', '==', 'unsold').stream()))
-        bot.send_message(ADMIN_ID, f"📊 Total Users: {users}\n📦 Available Stock: {stock}")
+        bot.send_message(ADMIN_ID, f"📊 *Bot Status*\n👥 Total Users: {users}\n📦 Available Stock: {stock}", parse_mode="Markdown")
         
     elif action == "mails":
         pending = len(list(db.collection('pending_mails').where('status', '==', 'pending').stream()))
         sold = len(list(db.collection('stock_gmails').where('status', '==', 'sold').stream()))
-        bot.send_message(ADMIN_ID, f"📧 *Mail Stats:*\nPending Approvals: {pending}\nSold Mails: {sold}")
-        
-    elif action == "addstock":
-        bot.send_message(ADMIN_ID, "➕ *Add Stock*\nUse this command to add manually:\n`/addstock email@gmail.com:password123`")
+        bot.send_message(ADMIN_ID, f"📧 *Mail Stats*\n⏳ Pending Approvals: {pending}\n🛒 Sold Mails: {sold}", parse_mode="Markdown")
 
-@bot.message_handler(commands=['set', 'setwallet', 'broadcast', 'addstock'])
-def admin_commands(message):
-    if message.from_user.id != ADMIN_ID: return
-    args = message.text.split(" ", 2)
-    cmd = args[0]
+    elif action == "back":
+        bot.edit_message_text("👑 *Super Admin Panel*\nSelect an option to manage your bot:", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=get_admin_main_menu())
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_edit_"))
+def admin_edit_handler(call):
+    bot.answer_callback_query(call.id)
+    parts = call.data.split("_", 3)
+    cat = parts[2]
+    field = parts[3]
+    msg = bot.send_message(call.message.chat.id, f"✏️ Enter new value for `{field}`:\n(Type /cancel to abort)", parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_admin_input, field, cat)
+
+def process_admin_input(message, field, category):
+    if message.text.lower() == '/cancel':
+        return bot.send_message(message.chat.id, "❌ Action Canceled.")
     
-    if cmd == '/set' and len(args) == 3:
-        db.collection('settings').document('config').update({args[1]: float(args[2])})
-        bot.reply_to(message, "✅ Config Updated!")
-    elif cmd == '/setwallet' and len(args) == 3:
-        db.collection('settings').document('payments').update({args[1]: args[2]})
-        bot.reply_to(message, "✅ Wallet Updated!")
-    elif cmd == '/addstock' and len(args) == 2:
-        try:
-            email, pwd = args[1].split(":")
-            db.collection('stock_gmails').add({'email': email, 'password': pwd, 'status': 'unsold', 'added_by': 'Admin'})
-            bot.reply_to(message, "✅ Mail Added to Stock!")
-        except:
-            bot.reply_to(message, "Error. Use: `/addstock mail:pass`")
-    elif cmd == '/broadcast' and len(args) > 1:
-        msg_txt = message.text.replace("/broadcast ", "")
-        for u in db.collection('users').stream():
-            try: bot.send_message(u.id, f"📢 *Notice:*\n{msg_txt}", parse_mode="Markdown")
-            except: pass
-        bot.reply_to(message, "✅ Sent to all!")
+    val = message.text
+    try:
+        if category == 'config':
+            val = float(val)
+            db.collection('settings').document('config').update({field: val})
+            bot.send_message(message.chat.id, f"✅ Settings updated! `{field}` is now `{val}`", parse_mode="Markdown")
+            
+        elif category == 'payments':
+            db.collection('settings').document('payments').update({field: val})
+            bot.send_message(message.chat.id, f"✅ Payment method `{field}` updated to `{val}`", parse_mode="Markdown")
+            
+        elif category == 'texts':
+            db.collection('settings').document('texts').update({field: val})
+            bot.send_message(message.chat.id, f"✅ Text updated successfully!", parse_mode="Markdown")
+            
+        elif category == 'broadcast':
+            users = db.collection('users').stream()
+            c = 0
+            for u in users:
+                try:
+                    bot.send_message(u.id, f"📢 *Notice:*\n\n{val}", parse_mode="Markdown")
+                    c += 1
+                except: pass
+            bot.send_message(message.chat.id, f"✅ Broadcast sent to {c} users.")
+            
+        elif category == 'addstock':
+            lines = val.split('\n')
+            c = 0
+            for line in lines:
+                if ":" in line:
+                    em, pw = line.split(":", 1)
+                    db.collection('stock_gmails').add({'email': em.strip(), 'password': pw.strip(), 'status': 'unsold', 'added_by': 'Admin', 'date': now()})
+                    c += 1
+            bot.send_message(message.chat.id, f"✅ {c} Mails added to stock!")
+            
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Error: Please enter valid input. ({e})")
 
 # --- Admin Approvals ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm"))
@@ -581,14 +670,11 @@ def run_web():
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    print("🤖 Premium Gmail Bot is running (Web Service Fixed)...")
+    print("🤖 Premium Gmail Bot is running (V4 InterActive Admin Panel Fixed)...")
     
-    # Remove webhook to avoid conflicts during polling
     bot.remove_webhook()
     
-    # Start the fake web server in a separate background thread
     web_thread = threading.Thread(target=run_web)
     web_thread.start()
     
-    # Start the Telegram bot
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
