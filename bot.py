@@ -6,6 +6,8 @@ import os
 import random
 import string
 from datetime import datetime
+from flask import Flask
+import threading
 
 # ==========================================
 # 1. Configuration & Setup
@@ -29,14 +31,12 @@ except Exception as e:
 def init_db():
     settings_ref = db.collection('settings')
     
-    # Configs
     if not settings_ref.document('config').get().exists:
         settings_ref.document('config').set({
             'buy_price': 15.0, 'sell_new': 10.0, 'sell_old': 10.0, 
             'ref_bonus': 5.0, 'min_dep': 50.0, 'usdt_rate': 120.0
         })
         
-    # Payment Methods
     if not settings_ref.document('payments').get().exists:
         settings_ref.document('payments').set({
             'bkash': '01985664862', 'nagad': '01985664862',
@@ -44,7 +44,6 @@ def init_db():
             'binance': 'TRC20: Your_Binance_Address'
         })
         
-    # Texts
     if not settings_ref.document('texts').get().exists:
         help_en = "📖 *How to use:*\n\n🛒 *Buy:* Click 'Buy Gmail' -> Enter quantity -> Get Mails.\n🤝 *Sell:* Click 'Sell Gmail' -> Submit details -> Wait for approval.\n💳 *Deposit:* Wallet -> Deposit -> Send money -> Submit TrxID.\n🎁 *Refer:* Share your link to earn bonus."
         help_bn = "📖 *কিভাবে ব্যবহার করবেন:*\n\n🛒 *কেনা:* 'জিমেইল কিনুন' এ ক্লিক করুন -> পরিমাণ লিখুন -> জিমেইল পেয়ে যাবেন।\n🤝 *বিক্রি:* 'জিমেইল বিক্রি' তে ক্লিক করে তথ্য দিন -> অ্যাডমিন এপ্রুভ করলে টাকা পাবেন।\n💳 *ডিপোজিট:* ওয়ালেট -> ডিপোজিট -> টাকা পাঠিয়ে TrxID দিন।\n🎁 *রেফার:* বন্ধুদের ইনভাইট করে বোনাস পান।"
@@ -122,13 +121,11 @@ LANG = {
 }
 
 # ==========================================
-# 4. Helper Functions (Fixing the Crash Bug)
+# 4. Helper Functions
 # ==========================================
 def get_user(user_id): 
     doc = db.collection('users').document(str(user_id)).get()
-    if doc.exists:
-        return doc.to_dict()
-    # Default return if user deleted or didn't press start
+    if doc.exists: return doc.to_dict()
     return {'id': str(user_id), 'username': 'User', 'lang': 'bn', 'currency': 'BDT', 'balance_bdt': 0.0, 'total_bought': 0, 'total_sold': 0, 'total_ref': 0}
 
 def main_menu(user_id, lang):
@@ -140,18 +137,15 @@ def main_menu(user_id, lang):
         KeyboardButton(LANG[lang]['refer']), KeyboardButton(LANG[lang]['help']),
         KeyboardButton(LANG[lang]['lang'])
     )
-    if int(user_id) == ADMIN_ID:
-        markup.add(KeyboardButton(LANG[lang]['admin_btn']))
+    if int(user_id) == ADMIN_ID: markup.add(KeyboardButton(LANG[lang]['admin_btn']))
     return markup
 
 def cancel_menu(lang):
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(KeyboardButton(LANG[lang]['cancel']))
+    markup = ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton(LANG[lang]['cancel']))
     return markup
 
 def now(): return datetime.now().strftime("%Y-%m-%d %I:%M %p")
 
-# Check if user clicked a menu button while bot was expecting input
 def is_menu_button(text):
     all_buttons = list(LANG['en'].values()) + list(LANG['bn'].values())
     return text in all_buttons
@@ -172,8 +166,7 @@ def start_bot(message):
     user_data = user_ref.get().to_dict()
     
     if user_data and user_data.get('status') == 'banned':
-        bot.send_message(message.chat.id, LANG['en']['banned'])
-        return
+        return bot.send_message(message.chat.id, LANG['en']['banned'])
 
     if not user_data:
         args = message.text.split()
@@ -196,19 +189,15 @@ def start_bot(message):
     banner = texts.get('banner_id', '')
     welcome = texts['welcome_bn'] if lang == 'bn' else texts['welcome_en']
     
-    if banner:
-        bot.send_photo(message.chat.id, banner, caption=welcome, reply_markup=main_menu(user_id, lang))
-    else:
-        bot.send_message(message.chat.id, welcome, reply_markup=main_menu(user_id, lang))
+    if banner: bot.send_photo(message.chat.id, banner, caption=welcome, reply_markup=main_menu(user_id, lang))
+    else: bot.send_message(message.chat.id, welcome, reply_markup=main_menu(user_id, lang))
 
 @bot.message_handler(func=lambda msg: msg.text in [LANG['en']['profile'], LANG['bn']['profile']])
 def profile_handler(message):
     u = get_user(message.from_user.id)
     cfg = get_config()
     usdt_bal = round(u['balance_bdt'] / cfg['usdt_rate'], 2)
-    text = LANG[u['lang']]['profile_txt'].format(
-        u['id'], u['username'], u['balance_bdt'], usdt_bal, u['total_bought'], u['total_sold'], u['total_ref']
-    )
+    text = LANG[u['lang']]['profile_txt'].format(u['id'], u['username'], u['balance_bdt'], usdt_bal, u['total_bought'], u['total_sold'], u['total_ref'])
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda msg: msg.text in [LANG['en']['help'], LANG['bn']['help']])
@@ -227,7 +216,7 @@ def settings_handler(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
 def update_settings(call):
-    bot.answer_callback_query(call.id) # Fix infinite loading
+    bot.answer_callback_query(call.id) 
     parts = call.data.split("_")
     val = parts[2]
     field = 'lang' if parts[1] == 'lang' else 'currency'
@@ -317,7 +306,7 @@ def buy_start(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_qty_ask")
 def buy_qty_ask(call):
-    bot.answer_callback_query(call.id) # Fix Infinite Loading
+    bot.answer_callback_query(call.id) 
     u = get_user(call.from_user.id)
     cfg = get_config()
     price = cfg['buy_price']
@@ -334,7 +323,6 @@ def process_buy_qty(message, max_qty, price, u):
     text = message.text
     if text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
     
-    # Prevents crash if user clicked "Sell Gmail" instead of typing number
     if is_menu_button(text):
         bot.clear_step_handler_by_chat_id(message.chat.id)
         return bot.send_message(message.chat.id, "Action canceled.", reply_markup=main_menu(message.from_user.id, u['lang']))
@@ -449,7 +437,7 @@ def process_sell_pass(message, email, mail_type, u):
     bot.send_message(message.chat.id, LANG[u['lang']]['pending'], reply_markup=main_menu(message.from_user.id, u['lang']))
 
 # ==========================================
-# 9. Super Admin Panel (All buttons fixed)
+# 9. Super Admin Panel
 # ==========================================
 @bot.message_handler(func=lambda msg: msg.text in [LANG['en']['admin_btn'], LANG['bn']['admin_btn']] and msg.from_user.id == ADMIN_ID)
 def admin_panel(message):
@@ -469,7 +457,7 @@ def admin_panel(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm_menu_"))
 def admin_menu_handler(call):
-    bot.answer_callback_query(call.id) # Fix infinite loading on admin buttons
+    bot.answer_callback_query(call.id) 
     if call.from_user.id != ADMIN_ID: return
     action = call.data.split("_")[2]
     
@@ -536,14 +524,14 @@ def admin_commands(message):
             except: pass
         bot.reply_to(message, "✅ Sent to all!")
 
-# --- Admin Approvals (Buy/Sell/Deposit) ---
+# --- Admin Approvals ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm"))
 def admin_approvals(call):
-    bot.answer_callback_query(call.id) # Fix infinite loading 
+    bot.answer_callback_query(call.id) 
     if call.from_user.id != ADMIN_ID: return
     parts = call.data.split("_")
-    cat = parts[0] # admdep, admsell
-    action = parts[1] # app, rej
+    cat = parts[0] 
+    action = parts[1] 
     doc_id = parts[2]
     
     if cat == "admdep":
@@ -580,8 +568,27 @@ def admin_approvals(call):
             bot.edit_message_text(f"❌ Mail Rejected", ADMIN_ID, call.message.message_id)
 
 # ==========================================
-# 10. Start Polling
+# 10. Fake Web Server for Render & Bot Start
 # ==========================================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running perfectly!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
 if __name__ == "__main__":
-    print("🤖 Premium Gmail Bot is running (V3 Crash Fixed)...")
+    print("🤖 Premium Gmail Bot is running (Web Service Fixed)...")
+    
+    # Remove webhook to avoid conflicts during polling
+    bot.remove_webhook()
+    
+    # Start the fake web server in a separate background thread
+    web_thread = threading.Thread(target=run_web)
+    web_thread.start()
+    
+    # Start the Telegram bot
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
