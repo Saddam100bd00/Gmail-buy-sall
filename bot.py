@@ -122,9 +122,14 @@ LANG = {
 }
 
 # ==========================================
-# 4. Helper Functions
+# 4. Helper Functions (Fixing the Crash Bug)
 # ==========================================
-def get_user(user_id): return db.collection('users').document(str(user_id)).get().to_dict()
+def get_user(user_id): 
+    doc = db.collection('users').document(str(user_id)).get()
+    if doc.exists:
+        return doc.to_dict()
+    # Default return if user deleted or didn't press start
+    return {'id': str(user_id), 'username': 'User', 'lang': 'bn', 'currency': 'BDT', 'balance_bdt': 0.0, 'total_bought': 0, 'total_sold': 0, 'total_ref': 0}
 
 def main_menu(user_id, lang):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -146,10 +151,15 @@ def cancel_menu(lang):
 
 def now(): return datetime.now().strftime("%Y-%m-%d %I:%M %p")
 
+# Check if user clicked a menu button while bot was expecting input
+def is_menu_button(text):
+    all_buttons = list(LANG['en'].values()) + list(LANG['bn'].values())
+    return text in all_buttons
+
 @bot.message_handler(func=lambda msg: msg.text in [LANG['en']['cancel'], LANG['bn']['cancel']])
 def cancel_action(message):
     bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
-    lang = get_user(message.from_user.id).get('lang', 'en')
+    lang = get_user(message.from_user.id).get('lang', 'bn')
     bot.send_message(message.chat.id, LANG[lang]['canceled'], reply_markup=main_menu(message.from_user.id, lang))
 
 # ==========================================
@@ -217,11 +227,12 @@ def settings_handler(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
 def update_settings(call):
+    bot.answer_callback_query(call.id) # Fix infinite loading
     parts = call.data.split("_")
     val = parts[2]
     field = 'lang' if parts[1] == 'lang' else 'currency'
     db.collection('users').document(str(call.from_user.id)).update({field: val})
-    bot.answer_callback_query(call.id, f"Updated {field} to {val} ✅")
+    bot.send_message(call.message.chat.id, f"✅ Settings updated to {val}!", reply_markup=main_menu(call.from_user.id, val if field=='lang' else get_user(call.from_user.id)['lang']))
     bot.delete_message(call.message.chat.id, call.message.message_id)
 
 # ==========================================
@@ -229,7 +240,7 @@ def update_settings(call):
 # ==========================================
 @bot.message_handler(func=lambda msg: msg.text in [LANG['en']['wallet'], LANG['bn']['wallet']])
 def wallet_handler(message):
-    lang = get_user(message.from_user.id).get('lang', 'en')
+    lang = get_user(message.from_user.id).get('lang', 'bn')
     markup = InlineKeyboardMarkup().add(
         InlineKeyboardButton(LANG[lang]['deposit'], callback_data="dep_menu"),
         InlineKeyboardButton(LANG[lang]['withdraw'], callback_data="with_menu")
@@ -238,6 +249,7 @@ def wallet_handler(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "dep_menu")
 def dep_menu(call):
+    bot.answer_callback_query(call.id)
     markup = InlineKeyboardMarkup(row_width=2).add(
         InlineKeyboardButton("bKash", callback_data="dep_bkash"), InlineKeyboardButton("Nagad", callback_data="dep_nagad"),
         InlineKeyboardButton("Rocket", callback_data="dep_rocket"), InlineKeyboardButton("Upay", callback_data="dep_upay"),
@@ -247,6 +259,7 @@ def dep_menu(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("dep_") and call.data != "dep_menu")
 def get_dep_amount(call):
+    bot.answer_callback_query(call.id)
     method = call.data.split("_")[1]
     u = get_user(call.from_user.id)
     cfg = get_config()
@@ -254,9 +267,14 @@ def get_dep_amount(call):
     bot.register_next_step_handler(msg, process_dep_amount, method, cfg['min_dep'], u)
 
 def process_dep_amount(message, method, min_dep, u):
-    if message.text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
+    text = message.text
+    if text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
+    if is_menu_button(text): 
+        bot.clear_step_handler_by_chat_id(message.chat.id)
+        return bot.send_message(message.chat.id, "Action canceled.", reply_markup=main_menu(message.from_user.id, u['lang']))
+        
     try:
-        amount = float(message.text)
+        amount = float(text)
         if amount < min_dep:
             msg = bot.send_message(message.chat.id, f"❌ Minimum is {min_dep}. Try again:", reply_markup=cancel_menu(u['lang']))
             return bot.register_next_step_handler(msg, process_dep_amount, method, min_dep, u)
@@ -269,8 +287,13 @@ def process_dep_amount(message, method, min_dep, u):
         bot.send_message(message.chat.id, LANG[u['lang']]['qty_err'], reply_markup=main_menu(message.from_user.id, u['lang']))
 
 def process_dep_trx(message, method, amount, u):
-    if message.text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
-    trx_id = message.text
+    text = message.text
+    if text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
+    if is_menu_button(text):
+        bot.clear_step_handler_by_chat_id(message.chat.id)
+        return bot.send_message(message.chat.id, "Action canceled.", reply_markup=main_menu(message.from_user.id, u['lang']))
+        
+    trx_id = text
     doc_ref = db.collection('deposits').document()
     doc_ref.set({'user_id': u['id'], 'username': u['username'], 'method': method, 'amount': amount, 'trx_id': trx_id, 'status': 'pending', 'time': now()})
     
@@ -294,6 +317,7 @@ def buy_start(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_qty_ask")
 def buy_qty_ask(call):
+    bot.answer_callback_query(call.id) # Fix Infinite Loading
     u = get_user(call.from_user.id)
     cfg = get_config()
     price = cfg['buy_price']
@@ -301,15 +325,22 @@ def buy_qty_ask(call):
     max_qty = int(bal // price)
     
     if max_qty < 1:
-        return bot.answer_callback_query(call.id, LANG[u['lang']]['no_bal'], show_alert=True)
+        return bot.send_message(call.message.chat.id, LANG[u['lang']]['no_bal'])
         
     msg = bot.send_message(call.message.chat.id, LANG[u['lang']]['buy_qty'].format(bal, max_qty), parse_mode="Markdown", reply_markup=cancel_menu(u['lang']))
     bot.register_next_step_handler(msg, process_buy_qty, max_qty, price, u)
 
 def process_buy_qty(message, max_qty, price, u):
-    if message.text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
+    text = message.text
+    if text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
+    
+    # Prevents crash if user clicked "Sell Gmail" instead of typing number
+    if is_menu_button(text):
+        bot.clear_step_handler_by_chat_id(message.chat.id)
+        return bot.send_message(message.chat.id, "Action canceled.", reply_markup=main_menu(message.from_user.id, u['lang']))
+        
     try:
-        qty = int(message.text)
+        qty = int(text)
         if qty <= 0: raise ValueError
         if qty > max_qty:
             msg = bot.send_message(message.chat.id, f"❌ You only have balance for {max_qty} Gmails. Try again:", reply_markup=cancel_menu(u['lang']))
@@ -329,17 +360,25 @@ def process_buy_qty(message, max_qty, price, u):
             bot.send_message(message.chat.id, LANG[u['lang']]['stock_less'].format(avail, avail), reply_markup=markup)
         else:
             execute_buy(message.chat.id, u['id'], qty, price, u['lang'], stock)
-    except:
+    except Exception as e:
         bot.send_message(message.chat.id, LANG[u['lang']]['qty_err'], reply_markup=main_menu(message.from_user.id, u['lang']))
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_exec_"))
 def buy_exec_cb(call):
+    bot.answer_callback_query(call.id)
     qty = int(call.data.split("_")[2])
     u = get_user(call.from_user.id)
     cfg = get_config()
     stock = list(db.collection('stock_gmails').where('status', '==', 'unsold').limit(qty).stream())
     bot.delete_message(call.message.chat.id, call.message.message_id)
     execute_buy(call.message.chat.id, str(call.from_user.id), qty, cfg['buy_price'], u['lang'], stock)
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_action")
+def cancel_inline(call):
+    bot.answer_callback_query(call.id)
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    u = get_user(call.from_user.id)
+    bot.send_message(call.message.chat.id, LANG[u['lang']]['canceled'], reply_markup=main_menu(call.from_user.id, u['lang']))
 
 def execute_buy(chat_id, user_id, qty, price, lang, stock_docs):
     cost = qty * price
@@ -384,14 +423,20 @@ def sell_old(message):
     bot.register_next_step_handler(msg, process_sell_email, u)
 
 def process_sell_email(message, u):
-    if message.text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
-    email = message.text
+    text = message.text
+    if text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
+    if is_menu_button(text): return bot.clear_step_handler_by_chat_id(message.chat.id)
+    
+    email = text
     msg = bot.send_message(message.chat.id, LANG[u['lang']]['task_pass'].format(email), parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_sell_pass, email, "Old", u)
 
 def process_sell_pass(message, email, mail_type, u):
-    if message.text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
-    password = message.text
+    text = message.text
+    if text in [LANG['en']['cancel'], LANG['bn']['cancel']]: return cancel_action(message)
+    if is_menu_button(text): return bot.clear_step_handler_by_chat_id(message.chat.id)
+    
+    password = text
     doc_ref = db.collection('pending_mails').document()
     doc_ref.set({'user_id': u['id'], 'username': u['username'], 'email': email, 'password': password, 'type': mail_type, 'status': 'pending', 'time': now()})
     
@@ -404,7 +449,7 @@ def process_sell_pass(message, email, mail_type, u):
     bot.send_message(message.chat.id, LANG[u['lang']]['pending'], reply_markup=main_menu(message.from_user.id, u['lang']))
 
 # ==========================================
-# 9. Super Admin Panel
+# 9. Super Admin Panel (All buttons fixed)
 # ==========================================
 @bot.message_handler(func=lambda msg: msg.text in [LANG['en']['admin_btn'], LANG['bn']['admin_btn']] and msg.from_user.id == ADMIN_ID)
 def admin_panel(message):
@@ -424,12 +469,13 @@ def admin_panel(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm_menu_"))
 def admin_menu_handler(call):
+    bot.answer_callback_query(call.id) # Fix infinite loading on admin buttons
     if call.from_user.id != ADMIN_ID: return
     action = call.data.split("_")[2]
     
     if action == "price":
         c = get_config()
-        txt = f"*Prices:*\nBuy: {c['buy_price']}\nSell New: {c['sell_new']}\nSell Old: {c['sell_old']}\n\nUse: `/set buy 20` or `/set sell_new 12`"
+        txt = f"*Prices:*\nBuy: {c['buy_price']}\nSell New: {c['sell_new']}\nSell Old: {c['sell_old']}\n\nUse: `/set buy_price 20` or `/set sell_new 12`"
         bot.send_message(ADMIN_ID, txt, parse_mode="Markdown")
         
     elif action == "wallet":
@@ -441,15 +487,30 @@ def admin_menu_handler(call):
         c = get_config()
         bot.send_message(ADMIN_ID, f"Min Deposit: {c['min_dep']}\nUse: `/set min_dep 100`")
         
+    elif action == "ref":
+        c = get_config()
+        bot.send_message(ADMIN_ID, f"Refer Bonus: {c['ref_bonus']}\nUse: `/set ref_bonus 10`")
+        
+    elif action == "texts":
+        bot.send_message(ADMIN_ID, "📝 *Customize Texts:*\nTo change welcome or help message, please edit them directly in Firebase Database under `settings/texts` document for now.")
+        
     elif action == "broad":
-        bot.send_message(ADMIN_ID, "For All: `/broadcast Hello Users`\nFor User: `/send user_id Hello`")
+        bot.send_message(ADMIN_ID, "For All: `/broadcast Hello Users`")
         
     elif action == "status":
         users = len(list(db.collection('users').stream()))
         stock = len(list(db.collection('stock_gmails').where('status', '==', 'unsold').stream()))
         bot.send_message(ADMIN_ID, f"📊 Total Users: {users}\n📦 Available Stock: {stock}")
+        
+    elif action == "mails":
+        pending = len(list(db.collection('pending_mails').where('status', '==', 'pending').stream()))
+        sold = len(list(db.collection('stock_gmails').where('status', '==', 'sold').stream()))
+        bot.send_message(ADMIN_ID, f"📧 *Mail Stats:*\nPending Approvals: {pending}\nSold Mails: {sold}")
+        
+    elif action == "addstock":
+        bot.send_message(ADMIN_ID, "➕ *Add Stock*\nUse this command to add manually:\n`/addstock email@gmail.com:password123`")
 
-@bot.message_handler(commands=['set', 'setwallet', 'broadcast', 'send'])
+@bot.message_handler(commands=['set', 'setwallet', 'broadcast', 'addstock'])
 def admin_commands(message):
     if message.from_user.id != ADMIN_ID: return
     args = message.text.split(" ", 2)
@@ -461,6 +522,13 @@ def admin_commands(message):
     elif cmd == '/setwallet' and len(args) == 3:
         db.collection('settings').document('payments').update({args[1]: args[2]})
         bot.reply_to(message, "✅ Wallet Updated!")
+    elif cmd == '/addstock' and len(args) == 2:
+        try:
+            email, pwd = args[1].split(":")
+            db.collection('stock_gmails').add({'email': email, 'password': pwd, 'status': 'unsold', 'added_by': 'Admin'})
+            bot.reply_to(message, "✅ Mail Added to Stock!")
+        except:
+            bot.reply_to(message, "Error. Use: `/addstock mail:pass`")
     elif cmd == '/broadcast' and len(args) > 1:
         msg_txt = message.text.replace("/broadcast ", "")
         for u in db.collection('users').stream():
@@ -471,6 +539,7 @@ def admin_commands(message):
 # --- Admin Approvals (Buy/Sell/Deposit) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm"))
 def admin_approvals(call):
+    bot.answer_callback_query(call.id) # Fix infinite loading 
     if call.from_user.id != ADMIN_ID: return
     parts = call.data.split("_")
     cat = parts[0] # admdep, admsell
@@ -480,7 +549,7 @@ def admin_approvals(call):
     if cat == "admdep":
         doc_ref = db.collection('deposits').document(doc_id)
         d = doc_ref.get().to_dict()
-        if not d or d['status'] != 'pending': return bot.answer_callback_query(call.id, "Already processed")
+        if not d or d['status'] != 'pending': return bot.send_message(ADMIN_ID, "Already processed")
         
         if action == "app":
             doc_ref.update({'status': 'approved'})
@@ -495,7 +564,7 @@ def admin_approvals(call):
     elif cat == "admsell":
         doc_ref = db.collection('pending_mails').document(doc_id)
         m = doc_ref.get().to_dict()
-        if not m or m['status'] != 'pending': return bot.answer_callback_query(call.id, "Already processed")
+        if not m or m['status'] != 'pending': return bot.send_message(ADMIN_ID, "Already processed")
         cfg = get_config()
         reward = cfg['sell_new'] if m['type'] == 'New' else cfg['sell_old']
         
@@ -514,5 +583,5 @@ def admin_approvals(call):
 # 10. Start Polling
 # ==========================================
 if __name__ == "__main__":
-    print("🤖 Premium Gmail Bot is running (V2 Update)...")
+    print("🤖 Premium Gmail Bot is running (V3 Crash Fixed)...")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
