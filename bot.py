@@ -40,7 +40,6 @@ def init_db():
             'usdt_rate': 120.0, 'support_link': 'https://t.me/YourAdminUsername'
         })
     else:
-        # Safely add missing keys if updating from older version
         conf = conf_doc.to_dict()
         updates = {}
         if 'min_with' not in conf: updates['min_with'] = 50.0
@@ -83,7 +82,7 @@ LANG = {
         'history': "📜 History", 'help': "📖 Help",
         'support': "🎧 Support", 'lang': "🌐 Language / Currency", 
         'cancel': "❌ Cancel", 'admin_btn': "👑 Admin Panel",
-        'profile_txt': "👤 *Your Profile*\nID: `{}`\nUsername: @{}\n\n💰 *Balance:*\nBDT: `{}` ৳\nUSDT: `${}`\n\n🛒 Bought: `{}`\n🤝 Sold: `{}`\n🎁 Referrals: `{}`",
+        'profile_txt': "👤 *Your Profile*\nName: {name}\nID: `{id}`\nUsername: {uname}\n\n💰 *Balance:*\nBDT: `{bdt}` ৳\nUSDT: `${usdt}`\n\n🛒 Bought: `{bought}`\n🤝 Sold: `{sold}`\n🎁 Referrals: `{ref}`",
         'sell_type': "What kind of Gmail do you want to sell?\nNew Mail: {} BDT | Old Mail: {} BDT",
         'new_mail': "🆕 New Gmail", 'old_mail': "🔄 Old Gmail",
         'task_new': "Create a new Gmail using this username:\n👉 `{}`\n\nSend the *Password* here:",
@@ -114,7 +113,7 @@ LANG = {
         'history': "📜 ইতিহাস", 'help': "📖 সাহায্য",
         'support': "🎧 সাপোর্ট", 'lang': "🌐 ভাষা / কারেন্সি", 
         'cancel': "❌ বাতিল করুন", 'admin_btn': "👑 অ্যাডমিন প্যানেল",
-        'profile_txt': "👤 *আপনার প্রোফাইল*\nআইডি: `{}`\nইউজারনেম: @{}\n\n💰 *ব্যালেন্স:*\nBDT: `{}` ৳\nUSDT: `${}`\n\n🛒 কেনা হয়েছে: `{}`\n🤝 বিক্রি হয়েছে: `{}`\n🎁 রেফারেল: `{}`",
+        'profile_txt': "👤 *আপনার প্রোফাইল*\nনাম: {name}\nআইডি: `{id}`\nইউজারনেম: {uname}\n\n💰 *ব্যালেন্স:*\nBDT: `{bdt}` ৳\nUSDT: `${usdt}`\n\n🛒 কেনা হয়েছে: `{bought}`\n🤝 বিক্রি হয়েছে: `{sold}`\n🎁 রেফারেল: `{ref}`",
         'sell_type': "আপনি কোন ধরনের জিমেইল বিক্রি করতে চান?\nনতুন: {} ৳ | পুরাতন: {} ৳",
         'new_mail': "🆕 নতুন জিমেইল", 'old_mail': "🔄 পুরাতন জিমেইল",
         'task_new': "এই ইউজারনেমটি দিয়ে একটি নতুন জিমেইল খুলুন:\n👉 `{}`\n\nখোলার পর *পাসওয়ার্ডটি* নিচে দিন:",
@@ -146,7 +145,7 @@ LANG = {
 def get_user(user_id): 
     doc = db.collection('users').document(str(user_id)).get()
     if doc.exists: return doc.to_dict()
-    return {'id': str(user_id), 'username': 'User', 'lang': 'bn', 'currency': 'BDT', 'balance_bdt': 0.0, 'total_bought': 0, 'total_sold': 0, 'total_ref': 0}
+    return {'id': str(user_id), 'lang': 'bn', 'currency': 'BDT', 'balance_bdt': 0.0, 'total_bought': 0, 'total_sold': 0, 'total_ref': 0}
 
 def main_menu(user_id, lang):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -183,7 +182,7 @@ def cancel_action(message):
 def start_bot(message):
     user_id = str(message.from_user.id)
     user_ref = db.collection('users').document(user_id)
-    user_data = user_ref.get().to_dict()
+    user_data = user_ref.get().to_dict() if user_ref.get().exists else None
     
     if user_data and user_data.get('status') == 'banned':
         return bot.send_message(message.chat.id, LANG['en']['banned'])
@@ -191,18 +190,23 @@ def start_bot(message):
     if not user_data:
         args = message.text.split()
         referrer_id = args[1] if len(args) > 1 else None
+        
+        # Merge True prevents overwriting if document somehow exists
         user_ref.set({
-            'id': user_id, 'username': message.from_user.username or "User", 
+            'id': user_id, 
+            'first_name': message.from_user.first_name or "User",
+            'username': message.from_user.username, 
             'lang': 'bn', 'currency': 'BDT', 'balance_bdt': 0.0,
             'total_bought': 0, 'total_sold': 0, 'total_ref': 0,
             'status': 'active', 'join_date': now()
-        })
+        }, merge=True)
+        
         if referrer_id and referrer_id != user_id:
             cfg = get_config()
             ref_user = db.collection('users').document(referrer_id)
             if ref_user.get().exists:
-                ref_user.update({'balance_bdt': firestore.Increment(cfg['ref_bonus']), 'total_ref': firestore.Increment(1)})
-                bot.send_message(referrer_id, f"🎉 You received {cfg['ref_bonus']} BDT for a new referral!")
+                ref_user.set({'balance_bdt': firestore.Increment(cfg.get('ref_bonus', 5.0)), 'total_ref': firestore.Increment(1)}, merge=True)
+                bot.send_message(referrer_id, f"🎉 You received {cfg.get('ref_bonus', 5.0)} BDT for a new referral!")
 
     lang = get_user(user_id).get('lang', 'bn')
     texts = get_texts()
@@ -219,9 +223,16 @@ def profile_handler(message):
     bal = u.get('balance_bdt', 0.0)
     usdt_bal = round(bal / cfg.get('usdt_rate', 120.0), 2)
     
+    # Get Live Data from Message object to keep it updated always
+    name = message.from_user.first_name or "User"
+    uname = f"@{message.from_user.username}" if message.from_user.username else "NONE"
+    
     text = LANG[u.get('lang', 'bn')]['profile_txt'].format(
-        u.get('id', 'N/A'), u.get('username', 'User'), bal, usdt_bal, 
-        u.get('total_bought', 0), u.get('total_sold', 0), u.get('total_ref', 0)
+        name=name, id=u.get('id', 'N/A'), uname=uname, 
+        bdt=bal, usdt=usdt_bal, 
+        bought=u.get('total_bought', 0), 
+        sold=u.get('total_sold', 0), 
+        ref=u.get('total_ref', 0)
     )
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
@@ -338,10 +349,13 @@ def process_dep_trx(message, method, amount, u):
         
     trx_id = text
     doc_ref = db.collection('deposits').document()
-    doc_ref.set({'user_id': u['id'], 'username': u.get('username','User'), 'method': method, 'amount': amount, 'trx_id': trx_id, 'status': 'pending', 'time': now()})
+    doc_ref.set({'user_id': u['id'], 'method': method, 'amount': amount, 'trx_id': trx_id, 'status': 'pending', 'time': now()})
+    
+    name = message.from_user.first_name or "User"
+    uname = f"@{message.from_user.username}" if message.from_user.username else "NONE"
     
     # HTML FORMAT FIXED CRASH
-    adm_txt = f"💰 <b>Deposit Request</b>\n\nUser: @{u.get('username','User')} (<code>{u['id']}</code>)\nAmount: <code>{amount}</code> BDT\nMethod: {method.upper()}\nTrxID: <code>{trx_id}</code>\nTime: {now()}"
+    adm_txt = f"💰 <b>Deposit Request</b>\n\n<b>Name:</b> {name}\n<b>User:</b> {uname} (<code>{u['id']}</code>)\n<b>Amount:</b> <code>{amount}</code> BDT\n<b>Method:</b> {method.upper()}\n<b>TrxID:</b> <code>{trx_id}</code>\n<b>Time:</b> {now()}"
     markup = InlineKeyboardMarkup().add(
         InlineKeyboardButton("✅ Approve", callback_data=f"admdep_app_{doc_ref.id}"),
         InlineKeyboardButton("❌ Reject", callback_data=f"admdep_rej_{doc_ref.id}")
@@ -396,12 +410,15 @@ def process_with_number(message, method, amount, u):
     
     number = text
     doc_ref = db.collection('withdraws').document()
-    doc_ref.set({'user_id': u['id'], 'username': u.get('username','User'), 'method': method, 'amount': amount, 'number': number, 'status': 'pending', 'time': now()})
+    doc_ref.set({'user_id': u['id'], 'method': method, 'amount': amount, 'number': number, 'status': 'pending', 'time': now()})
     
-    # Deduct pending balance
-    db.collection('users').document(u['id']).update({'balance_bdt': firestore.Increment(-amount)})
+    # Safely Deduct pending balance with merge=True
+    db.collection('users').document(u['id']).set({'balance_bdt': firestore.Increment(-amount)}, merge=True)
     
-    adm_txt = f"📤 <b>Withdraw Request</b>\n\nUser: @{u.get('username','User')} (<code>{u['id']}</code>)\nAmount: <code>{amount}</code> BDT\nMethod: {method.upper()}\nNumber: <code>{number}</code>\nTime: {now()}"
+    name = message.from_user.first_name or "User"
+    uname = f"@{message.from_user.username}" if message.from_user.username else "NONE"
+
+    adm_txt = f"📤 <b>Withdraw Request</b>\n\n<b>Name:</b> {name}\n<b>User:</b> {uname} (<code>{u['id']}</code>)\n<b>Amount:</b> <code>{amount}</code> BDT\n<b>Method:</b> {method.upper()}\n<b>Number:</b> <code>{number}</code>\n<b>Time:</b> {now()}"
     markup = InlineKeyboardMarkup().add(
         InlineKeyboardButton("✅ Paid", callback_data=f"admwith_app_{doc_ref.id}"),
         InlineKeyboardButton("❌ Reject", callback_data=f"admwith_rej_{doc_ref.id}")
@@ -485,10 +502,10 @@ def cancel_inline(call):
 
 def execute_buy(chat_id, user_id, qty, price, lang, stock_docs):
     cost = qty * price
-    db.collection('users').document(user_id).update({
+    db.collection('users').document(user_id).set({
         'balance_bdt': firestore.Increment(-cost),
         'total_bought': firestore.Increment(qty)
-    })
+    }, merge=True)
     
     mail_list_txt = ""
     for doc in stock_docs:
@@ -541,10 +558,13 @@ def process_sell_pass(message, email, mail_type, u):
     
     password = text
     doc_ref = db.collection('pending_mails').document()
-    doc_ref.set({'user_id': u['id'], 'username': u.get('username','User'), 'email': email, 'password': password, 'type': mail_type, 'status': 'pending', 'time': now()})
+    doc_ref.set({'user_id': u['id'], 'email': email, 'password': password, 'type': mail_type, 'status': 'pending', 'time': now()})
     
+    name = message.from_user.first_name or "User"
+    uname = f"@{message.from_user.username}" if message.from_user.username else "NONE"
+
     # HTML FORMAT FIXED CRASH
-    adm_txt = f"🔔 <b>New Gmail Sell</b>\n\nUser: @{u.get('username','User')} (<code>{u['id']}</code>)\nType: {mail_type}\nEmail: <code>{email}</code>\nPass: <code>{password}</code>\nTime: {now()}"
+    adm_txt = f"🔔 <b>New Gmail Sell</b>\n\n<b>Name:</b> {name}\n<b>User:</b> {uname} (<code>{u['id']}</code>)\n<b>Type:</b> {mail_type}\n<b>Email:</b> <code>{email}</code>\n<b>Pass:</b> <code>{password}</code>\n<b>Time:</b> {now()}"
     markup = InlineKeyboardMarkup().add(
         InlineKeyboardButton("✅ Approve", callback_data=f"admsell_app_{doc_ref.id}"),
         InlineKeyboardButton("❌ Reject", callback_data=f"admsell_rej_{doc_ref.id}")
@@ -717,51 +737,58 @@ def admin_approvals(call):
     action = parts[1] 
     doc_id = parts[2]
     
-    if cat == "admdep":
-        doc_ref = db.collection('deposits').document(doc_id)
-        d = doc_ref.get().to_dict()
-        if not d or d.get('status') != 'pending': return bot.send_message(ADMIN_ID, "Already processed")
-        if action == "app":
-            doc_ref.update({'status': 'approved'})
-            db.collection('users').document(d['user_id']).update({'balance_bdt': firestore.Increment(d['amount'])})
-            bot.send_message(d['user_id'], f"✅ Your deposit of {d['amount']} BDT has been approved!")
-            bot.edit_message_text(f"✅ Approved {d['amount']} for @{d['username']}", ADMIN_ID, call.message.message_id)
-        else:
-            doc_ref.update({'status': 'rejected'})
-            bot.send_message(d['user_id'], f"❌ Your deposit of {d['amount']} BDT was rejected.")
-            bot.edit_message_text(f"❌ Rejected {d['amount']} for @{d['username']}", ADMIN_ID, call.message.message_id)
+    try:
+        if cat == "admdep":
+            doc_ref = db.collection('deposits').document(doc_id)
+            d = doc_ref.get().to_dict()
+            if not d or d.get('status') != 'pending': return bot.send_message(ADMIN_ID, "Already processed")
+            
+            if action == "app":
+                doc_ref.update({'status': 'approved'})
+                db.collection('users').document(d['user_id']).set({'balance_bdt': firestore.Increment(d['amount'])}, merge=True)
+                bot.send_message(d['user_id'], f"✅ Your deposit of {d['amount']} BDT has been approved!")
+                bot.edit_message_text(f"✅ Approved <b>{d['amount']} BDT</b>", ADMIN_ID, call.message.message_id, parse_mode="HTML")
+            else:
+                doc_ref.update({'status': 'rejected'})
+                bot.send_message(d['user_id'], f"❌ Your deposit of {d['amount']} BDT was rejected.")
+                bot.edit_message_text(f"❌ Rejected <b>{d['amount']} BDT</b>", ADMIN_ID, call.message.message_id, parse_mode="HTML")
 
-    elif cat == "admwith":
-        doc_ref = db.collection('withdraws').document(doc_id)
-        d = doc_ref.get().to_dict()
-        if not d or d.get('status') != 'pending': return bot.send_message(ADMIN_ID, "Already processed")
-        if action == "app":
-            doc_ref.update({'status': 'paid'})
-            bot.send_message(d['user_id'], f"✅ Your withdraw of {d['amount']} BDT has been PAID!")
-            bot.edit_message_text(f"✅ Paid {d['amount']} to @{d['username']}", ADMIN_ID, call.message.message_id)
-        else:
-            doc_ref.update({'status': 'rejected'})
-            db.collection('users').document(d['user_id']).update({'balance_bdt': firestore.Increment(d['amount'])}) # Refund
-            bot.send_message(d['user_id'], f"❌ Your withdraw of {d['amount']} BDT was rejected. Balance refunded.")
-            bot.edit_message_text(f"❌ Rejected {d['amount']} for @{d['username']}", ADMIN_ID, call.message.message_id)
+        elif cat == "admwith":
+            doc_ref = db.collection('withdraws').document(doc_id)
+            d = doc_ref.get().to_dict()
+            if not d or d.get('status') != 'pending': return bot.send_message(ADMIN_ID, "Already processed")
+            
+            if action == "app":
+                doc_ref.update({'status': 'paid'})
+                bot.send_message(d['user_id'], f"✅ Your withdraw of {d['amount']} BDT has been PAID!")
+                bot.edit_message_text(f"✅ Paid <b>{d['amount']} BDT</b>", ADMIN_ID, call.message.message_id, parse_mode="HTML")
+            else:
+                doc_ref.update({'status': 'rejected'})
+                db.collection('users').document(d['user_id']).set({'balance_bdt': firestore.Increment(d['amount'])}, merge=True) # Refund
+                bot.send_message(d['user_id'], f"❌ Your withdraw of {d['amount']} BDT was rejected. Balance refunded.")
+                bot.edit_message_text(f"❌ Rejected <b>{d['amount']} BDT</b>", ADMIN_ID, call.message.message_id, parse_mode="HTML")
 
-    elif cat == "admsell":
-        doc_ref = db.collection('pending_mails').document(doc_id)
-        m = doc_ref.get().to_dict()
-        if not m or m.get('status') != 'pending': return bot.send_message(ADMIN_ID, "Already processed")
-        cfg = get_config()
-        reward = cfg.get('sell_new',10) if m['type'] == 'New' else cfg.get('sell_old',10)
-        
-        if action == "app":
-            doc_ref.update({'status': 'approved'})
-            db.collection('users').document(m['user_id']).update({'balance_bdt': firestore.Increment(reward), 'total_sold': firestore.Increment(1)})
-            db.collection('stock_gmails').add({'email': m['email'], 'password': m['password'], 'status': 'unsold', 'added_by': m['user_id']})
-            bot.send_message(m['user_id'], f"✅ Admin approved your {m['type']} Gmail `{m['email']}`! {reward} BDT added.", parse_mode="Markdown")
-            bot.edit_message_text(f"✅ Mail Approved & Added to Stock", ADMIN_ID, call.message.message_id)
-        else:
-            doc_ref.update({'status': 'rejected'})
-            bot.send_message(m['user_id'], f"❌ Admin rejected your Gmail `{m['email']}`.", parse_mode="Markdown")
-            bot.edit_message_text(f"❌ Mail Rejected", ADMIN_ID, call.message.message_id)
+        elif cat == "admsell":
+            doc_ref = db.collection('pending_mails').document(doc_id)
+            m = doc_ref.get().to_dict()
+            if not m or m.get('status') != 'pending': return bot.send_message(ADMIN_ID, "Already processed")
+            
+            cfg = get_config()
+            reward = cfg.get('sell_new',10) if m['type'] == 'New' else cfg.get('sell_old',10)
+            
+            if action == "app":
+                doc_ref.update({'status': 'approved'})
+                db.collection('users').document(m['user_id']).set({'balance_bdt': firestore.Increment(reward), 'total_sold': firestore.Increment(1)}, merge=True)
+                db.collection('stock_gmails').add({'email': m['email'], 'password': m['password'], 'status': 'unsold', 'added_by': m['user_id'], 'date': now()})
+                bot.send_message(m['user_id'], f"✅ Admin approved your {m['type']} Gmail `{m['email']}`! {reward} BDT added.", parse_mode="Markdown")
+                bot.edit_message_text(f"✅ Mail Approved & Added to Stock", ADMIN_ID, call.message.message_id)
+            else:
+                doc_ref.update({'status': 'rejected'})
+                bot.send_message(m['user_id'], f"❌ Admin rejected your Gmail `{m['email']}`.", parse_mode="Markdown")
+                bot.edit_message_text(f"❌ Mail Rejected", ADMIN_ID, call.message.message_id)
+                
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ Action failed: {e}")
 
 # ==========================================
 # 10. Fake Web Server for Render & Bot Start
@@ -776,7 +803,7 @@ def run_web():
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    print("🤖 Premium Gmail Bot is running (V5 Final Fixes)...")
+    print("🤖 Premium Gmail Bot is running (V6 Premium Fixes)...")
     bot.remove_webhook()
     web_thread = threading.Thread(target=run_web)
     web_thread.start()
